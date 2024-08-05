@@ -1,67 +1,113 @@
 const Product = require("../models/Product");
 const cloudinary = require("cloudinary").v2;
 require("dotenv").config();
-
+const User = require('../models/User')
 function isFileSupported(type, supportedTypes) {
   return supportedTypes.includes(type);
 }
 
-async function uploadtoCloudinary(file, folder, quality) {
+async function uploadtoCloudinary(fileBuffer, folder, quality) {
   const options = { folder, resource_type: "auto" };
   if (quality) {
     options.quality = quality;
   }
-  return await cloudinary.uploader.upload(file.tempFilePath, options);
+
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      options,
+      (error, result) => {
+        if (error) {
+          return reject(
+            new Error("Upload to Cloudinary failed: " + error.message)
+          );
+        }
+        resolve(result);
+      }
+    );
+    stream.end(fileBuffer);
+  });
 }
 
 exports.fileUpload = async (req, res) => {
   try {
-    const { name, description, date, price, tag } = req.body;
+    const { name, description, date, price, tag, email  } = req.body;
 
-    if (!req.files) {
+    if (!req.files && !req.file) {
       return res.status(400).json({
         success: false,
         message: "No files were uploaded",
       });
     }
 
-    const files = Array.isArray(req.files.filename)
-      ? req.files.filename
-      : [req.files.filename];
+    const files = req.file ? [req.file] : req.files;
     const images = [];
 
-        for (let file of files) {
-            const supportedTypes = ["jpg", "jpeg", "png"];
-            const filetype = file.name.split('.').pop().toLowerCase();
-            if (!isFileSupported(filetype, supportedTypes)) {
-                return res.status(415).json({
-                    success: false,
-                    message: `File format not supported. Allowable formats are png, jpg, and jpeg`
-                });
-            }
-            console.log(`going for cloudinary`)
-            const response = await uploadtoCloudinary(file, process.env.FOLDER_NAME, 70);
-            console.log(`File uploaded`);
-            images.push({ url: response.secure_url });
-        }
-        const productdata = await Product.create({
-            name, description, date, price, tag, imgUrl: images
-        });
-        console.log(`this is the required product data`);
-        console.log(productdata);
-        res.json({
-            success: true,
-            imgUrl: images.map(image => image.url),
-            message: "Images uploaded successfully",
-            productdata
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(400).json({
-            success: false,
-            message: `Something went wrong`
+    for (let file of files) {
+      const supportedTypes = ["jpg", "jpeg", "png"];
+      const filetype = file.originalname.split(".").pop().toLowerCase();
+      if (!isFileSupported(filetype, supportedTypes)) {
+        return res.status(415).json({
+          success: false,
+          message:
+            "File format not supported. Allowable formats are png, jpg, and jpeg",
         });
       }
+
+      try {
+        const response = await uploadtoCloudinary(
+          file.buffer,
+          process.env.FOLDER_NAME,
+          70
+        );
+
+        if (!response || !response.secure_url) {
+          throw new Error("Invalid response from Cloudinary");
+        }
+
+        images.push({ url: response.secure_url });
+      } catch (uploadError) {
+        console.error("Error uploading to Cloudinary:", uploadError);
+        return res.status(500).json({
+          success: false,
+          message: "Error uploading to Cloudinary",
+        });
+      }
+    }
+  
+    const productdata = await Product.create({
+      name,
+      description,
+      date,
+      price,
+      tag,
+      imgUrl: images,
+    });
+
+    const newdata = await User.findOneAndUpdate(
+      email,
+      {
+        $push: {
+          products: productdata._id,
+        },
+      },
+      { new: true }
+    )
+
+    console.log(newdata);
+    res.json({
+      success: true,
+      imgUrl: images.map((image) => image.url),
+      message: "Images uploaded successfully",
+      productdata
+
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(400).json({
+      success: false,
+      message: "Something went wrong",
+    });
+  }
 };
 
 exports.getAllProduct = async (req, res) => {
@@ -117,7 +163,7 @@ exports.updateProduct = async (req, res) => {
 
     for (let file of files) {
       const supportedTypes = ["jpg", "jpeg", "png"];
-      const filetype = file.name.split(".").pop().toLowerCase();
+      const filetype = file.originalname.split(".").pop().toLowerCase();
 
       if (!isFileSupported(filetype, supportedTypes)) {
         return res.status(415).json({
